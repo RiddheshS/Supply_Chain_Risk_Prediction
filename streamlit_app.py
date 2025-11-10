@@ -9,18 +9,27 @@ import plotly.express as px
 import plotly.graph_objects as go
 from pathlib import Path
 
-# --- Auto-create model on first run (works on Streamlit Cloud) ----------------
+# --- Robust auto-create model on first run (works on Streamlit Cloud) ----------
 MODEL_PATH = Path("ml_model/risk_prediction_model.pkl")
 if not MODEL_PATH.exists():
     MODEL_PATH.parent.mkdir(parents=True, exist_ok=True)
     Path("data").mkdir(parents=True, exist_ok=True)
-    # Import and train once; this must save to ml_model/risk_prediction_model.pkl
-    import ml_model.train_model as trainer
-    trainer.train_model()
-# -----------------------------------------------------------------------------
 
+    # Try normal package import first
+    try:
+        import ml_model.train_model as trainer
+    except ModuleNotFoundError:
+        # Fallback: import by file path so it works even without __init__.py
+        import importlib.util
+        train_path = Path("ml_model") / "train_model.py"
+        spec = importlib.util.spec_from_file_location("trainer", train_path)
+        trainer = importlib.util.module_from_spec(spec)
+        assert spec and spec.loader, "Cannot load trainer spec"
+        spec.loader.exec_module(trainer)
 
-# Page configuration
+    trainer.train_model()  # must save to ml_model/risk_prediction_model.pkl
+# ------------------------------------------------------------------------------
+
 st.set_page_config(
     page_title="Supply Chain Risk Prediction",
     page_icon="📊",
@@ -28,13 +37,11 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
-# Load the trained model
 @st.cache_resource
 def load_model():
     model_path = 'ml_model/risk_prediction_model.pkl'
     return joblib.load(model_path)
 
-# Database functions
 def init_db():
     conn = sqlite3.connect('supply_chain_risk.db')
     c = conn.cursor()
@@ -77,9 +84,7 @@ def get_history():
     conn.close()
     return df
 
-# Risk prediction function
 def predict_risk(model, input_data):
-    # Prepare features for model
     features = np.array([[
         input_data['supplier_reliability'],
         input_data['demand_volatility'],
@@ -87,29 +92,20 @@ def predict_risk(model, input_data):
         input_data['economic_indicators'],
         input_data['historical_delays']
     ]])
-
-    # Get prediction
     risk_level = int(model.predict(features)[0])
-    # Some models may not have predict_proba (but our trainer does). Guard it:
     if hasattr(model, "predict_proba"):
         proba = model.predict_proba(features)[0]
-        # if classes aren't [0,1,2] in order, map by index
         class_to_idx = {c: i for i, c in enumerate(getattr(model, "classes_", [0,1,2]))}
         risk_score = float(proba[class_to_idx.get(risk_level, 0)])
     else:
         risk_score = 0.0
-
     return risk_level, risk_score
 
-# Main app
 def main():
     st.title("📊 Supply Chain Risk Prediction Dashboard")
     st.markdown("Predict and monitor supply chain risks using machine learning")
-
-    # Load model (exists because of auto-create block)
     model = load_model()
 
-    # Sidebar
     st.sidebar.header("Navigation")
     page = st.sidebar.radio("Choose a page:", ["Risk Prediction", "Risk History", "Analytics"])
 
@@ -122,14 +118,11 @@ def main():
 
 def show_prediction_page(model):
     st.header("🔮 Risk Prediction")
-
     col1, col2 = st.columns([1, 1])
 
     with col1:
         st.subheader("Input Parameters")
-
         with st.form("prediction_form"):
-            # Basic information
             supplier_id = st.text_input("Supplier ID", value="SUP001")
             product_id = st.text_input("Product ID", value="PROD001")
 
@@ -142,13 +135,11 @@ def show_prediction_page(model):
 
             st.markdown("---")
             st.subheader("Risk Factors (0-1 scale)")
-
-            # Risk factors
             supplier_reliability = st.slider("Supplier Reliability", 0.0, 1.0, 0.8, 0.01)
-            demand_volatility = st.slider("Demand Volatility", 0.0, 1.0, 0.3, 0.01)
-            geopolitical_risk = st.slider("Geopolitical Risk", 0.0, 1.0, 0.2, 0.01)
-            economic_indicators = st.slider("Economic Indicators", 0.0, 1.0, 0.4, 0.01)
-            historical_delays = st.slider("Historical Delays", 0.0, 1.0, 0.1, 0.01)
+            demand_volatility    = st.slider("Demand Volatility", 0.0, 1.0, 0.3, 0.01)
+            geopolitical_risk    = st.slider("Geopolitical Risk", 0.0, 1.0, 0.2, 0.01)
+            economic_indicators  = st.slider("Economic Indicators", 0.0, 1.0, 0.4, 0.01)
+            historical_delays    = st.slider("Historical Delays", 0.0, 1.0, 0.1, 0.01)
 
             submitted = st.form_submit_button("Predict Risk")
 
@@ -169,20 +160,12 @@ def show_prediction_page(model):
                 with st.spinner("Analyzing risk factors..."):
                     risk_level, risk_score = predict_risk(model, input_data)
 
-                # Save prediction
                 save_prediction(input_data, risk_level, risk_score)
-
-                # Display results
-                risk_labels = {0: "Low Risk", 1: "Medium Risk", 2: "High Risk"}
-                risk_colors = {0: "green", 1: "orange", 2: "red"}
-
                 st.success("Risk prediction completed!")
 
     with col2:
         if 'risk_level' in locals():
             st.subheader("Prediction Results")
-
-            # Risk level display
             risk_labels = {0: "Low Risk", 1: "Medium Risk", 2: "High Risk"}
             risk_colors = {0: "green", 1: "orange", 2: "red"}
             risk_color = risk_colors[risk_level]
@@ -193,7 +176,6 @@ def show_prediction_page(model):
             </div>
             """, unsafe_allow_html=True)
 
-            # Risk breakdown
             st.subheader("Risk Factor Analysis")
             factors = {
                 "Supplier Reliability": supplier_reliability,
@@ -202,8 +184,6 @@ def show_prediction_page(model):
                 "Economic Indicators": economic_indicators,
                 "Historical Delays": historical_delays
             }
-
-            # Create bar chart
             factor_df = pd.DataFrame(list(factors.items()), columns=['Factor', 'Score'])
             fig = px.bar(factor_df, x='Factor', y='Score',
                          title="Risk Factor Scores",
@@ -211,7 +191,6 @@ def show_prediction_page(model):
                          color_continuous_scale='RdYlGn_r')
             st.plotly_chart(fig, use_container_width=True)
 
-            # Recommendations
             st.subheader("Recommendations")
             if risk_level == 0:
                 st.success("✅ Low risk - Proceed with normal operations")
@@ -228,15 +207,11 @@ def show_prediction_page(model):
 
 def show_history_page():
     st.header("📋 Risk History")
-
-    # Get history data
     df = get_history()
-
     if df.empty:
         st.info("No risk predictions found. Make some predictions first!")
         return
 
-    # Filters
     col1, col2, col3 = st.columns(3)
     with col1:
         risk_filter = st.multiselect(
@@ -250,7 +225,6 @@ def show_history_page():
     with col3:
         date_filter = st.date_input("Filter from date", value=None)
 
-    # Apply filters
     filtered_df = df.copy()
     if risk_filter:
         filtered_df = filtered_df[filtered_df['risk_level'].isin(risk_filter)]
@@ -258,9 +232,8 @@ def show_history_page():
         filtered_df = filtered_df[filtered_df['supplier_id'].str.contains(supplier_filter, case=False)]
     if date_filter:
         filtered_df['timestamp'] = pd.to_datetime(filtered_df['timestamp'])
-        filtered_df = filtered_df[filtered_df['timestamp'].dt.date >= date_filter]
+        filtered_df = filtered_df['timestamp'].dt.date >= date_filter
 
-    # Display metrics
     col1, col2, col3, col4 = st.columns(4)
     with col1:
         st.metric("Total Predictions", len(filtered_df))
@@ -274,9 +247,8 @@ def show_history_page():
         latest_score = filtered_df['risk_score'].iloc[0] if not filtered_df.empty else 0
         st.metric("Latest Risk Score", f"{latest_score:.3f}")
 
-    # Display table
     st.subheader("Prediction History")
-    display_df = filtered_df.copy()
+    display_df = df.copy()
     display_df['risk_level'] = display_df['risk_level'].map({0: "Low", 1: "Medium", 2: "High"})
     display_df['timestamp'] = pd.to_datetime(display_df['timestamp']).dt.strftime('%Y-%m-%d %H:%M:%S')
 
@@ -286,7 +258,6 @@ def show_history_page():
         use_container_width=True
     )
 
-    # Download option
     if not filtered_df.empty:
         csv = filtered_df.to_csv(index=False)
         st.download_button(
@@ -298,67 +269,45 @@ def show_history_page():
 
 def show_analytics_page():
     st.header("📈 Risk Analytics")
-
     df = get_history()
-
     if df.empty:
         st.info("No data available for analytics. Make some predictions first!")
         return
 
-    # Risk distribution
     col1, col2 = st.columns(2)
-
     with col1:
         st.subheader("Risk Level Distribution")
         risk_counts = df['risk_level'].value_counts().sort_index()
         risk_labels = {0: "Low Risk", 1: "Medium Risk", 2: "High Risk"}
-
-        fig = px.pie(
-            values=risk_counts.values,
-            names=[risk_labels[i] for i in risk_counts.index],
-            title="Risk Level Distribution",
-            color_discrete_sequence=['green', 'orange', 'red']
-        )
+        fig = px.pie(values=risk_counts.values,
+                     names=[risk_labels[i] for i in risk_counts.index],
+                     title="Risk Level Distribution",
+                     color_discrete_sequence=['green', 'orange', 'red'])
         st.plotly_chart(fig, use_container_width=True)
 
     with col2:
         st.subheader("Risk Score Trend")
         df['timestamp'] = pd.to_datetime(df['timestamp'])
         df_sorted = df.sort_values('timestamp')
-
-        fig = px.line(
-            df_sorted, x='timestamp', y='risk_score',
-            title="Risk Score Over Time",
-            markers=True
-        )
+        fig = px.line(df_sorted, x='timestamp', y='risk_score',
+                      title="Risk Score Over Time", markers=True)
         fig.update_layout(xaxis_title="Date", yaxis_title="Risk Score")
         st.plotly_chart(fig, use_container_width=True)
 
-    # Risk factors correlation
     st.subheader("Risk Factors Correlation")
     numeric_cols = ['supplier_reliability', 'demand_volatility', 'geopolitical_risk',
                     'economic_indicators', 'historical_delays', 'risk_score']
-
     corr_matrix = df[numeric_cols].corr()
-
-    fig = px.imshow(
-        corr_matrix,
-        text_auto=True,
-        aspect="auto",
-        title="Correlation Matrix of Risk Factors"
-    )
+    fig = px.imshow(corr_matrix, text_auto=True, aspect="auto",
+                    title="Correlation Matrix of Risk Factors")
     st.plotly_chart(fig, use_container_width=True)
 
-    # Supplier analysis
     st.subheader("Top Risky Suppliers")
     supplier_risks = df.groupby('supplier_id')['risk_score'].agg(['mean', 'count']).round(3)
     supplier_risks = supplier_risks.sort_values('mean', ascending=False).head(10)
-
-    fig = px.bar(
-        supplier_risks, x=supplier_risks.index, y='mean',
-        title="Average Risk Score by Supplier",
-        labels={'mean': 'Average Risk Score', 'supplier_id': 'Supplier ID'}
-    )
+    fig = px.bar(supplier_risks, x=supplier_risks.index, y='mean',
+                 title="Average Risk Score by Supplier",
+                 labels={'mean': 'Average Risk Score', 'supplier_id': 'Supplier ID'})
     st.plotly_chart(fig, use_container_width=True)
 
 if __name__ == "__main__":
