@@ -9,6 +9,15 @@ import plotly.express as px
 import plotly.graph_objects as go
 from pathlib import Path
 
+# ---- FIRST streamlit command: page config (must be before any st.* usage) ----
+st.set_page_config(
+    page_title="Supply Chain Risk Prediction",
+    page_icon="📊",
+    layout="wide",
+    initial_sidebar_state="expanded"
+)
+# -----------------------------------------------------------------------------
+
 # ---------------------------------------------------------------------------
 # SELF-CONTAINED TRAINING (no external ml_model/train_model.py needed)
 # ---------------------------------------------------------------------------
@@ -29,7 +38,6 @@ def _make_synthetic_dataset(n=2000, random_state=42):
     )
     noise = rng.normal(0, 0.05, n)
     risk_cont = np.clip(base + noise, 0, 1)
-
     y = np.digitize(risk_cont, bins=[0.33, 0.66])  # 0,1,2 classes
 
     df = pd.DataFrame({
@@ -43,12 +51,12 @@ def _make_synthetic_dataset(n=2000, random_state=42):
     return df
 
 def train_and_save_model():
+    # NOTE: use print() here so we don't call st.* before page_config
+    print("🔧 First-time setup: training model…")
     from sklearn.ensemble import RandomForestClassifier
     from sklearn.model_selection import train_test_split
 
-    st.write("🔧 First-time setup: training model…")
     df = _make_synthetic_dataset()
-
     X = df[["supplier_reliability","demand_volatility","geopolitical_risk",
             "economic_indicators","historical_delays"]]
     y = df["risk_level"]
@@ -68,29 +76,19 @@ def train_and_save_model():
     os.makedirs("data", exist_ok=True)
     df.to_csv("data/sample_supply_chain_data.csv", index=False)
 
-# --- auto-create model on first run ---
+# --- auto-create model on first run (no st.* calls here) ----------------------
 MODEL_PATH = Path("ml_model/risk_prediction_model.pkl")
 if not MODEL_PATH.exists():
     MODEL_PATH.parent.mkdir(parents=True, exist_ok=True)
     Path("data").mkdir(parents=True, exist_ok=True)
     train_and_save_model()
-# --------------------------------------
-
-
-# ---------------------------------------------------------------------------
-# UI + APP LOGIC
-# ---------------------------------------------------------------------------
-st.set_page_config(
-    page_title="Supply Chain Risk Prediction",
-    page_icon="📊",
-    layout="wide",
-    initial_sidebar_state="expanded"
-)
+# ------------------------------------------------------------------------------
 
 @st.cache_resource
 def load_model():
     return joblib.load("ml_model/risk_prediction_model.pkl")
 
+# ------------------------------ DB helpers ------------------------------------
 def init_db():
     conn = sqlite3.connect('supply_chain_risk.db')
     c = conn.cursor()
@@ -133,6 +131,7 @@ def get_history():
     conn.close()
     return df
 
+# --------------------------- prediction helper --------------------------------
 def predict_risk(model, input_data):
     features = np.array([[
         input_data['supplier_reliability'],
@@ -150,6 +149,7 @@ def predict_risk(model, input_data):
         risk_score = 0.0
     return risk_level, risk_score
 
+# ---------------------------------- UI ----------------------------------------
 def main():
     st.title("📊 Supply Chain Risk Prediction Dashboard")
     st.markdown("Predict and monitor supply chain risks using machine learning")
@@ -207,7 +207,6 @@ def show_prediction_page(model):
                 }
                 with st.spinner("Analyzing risk factors..."):
                     risk_level, risk_score = predict_risk(model, input_data)
-
                 save_prediction(input_data, risk_level, risk_score)
                 st.success("Risk prediction completed!")
 
