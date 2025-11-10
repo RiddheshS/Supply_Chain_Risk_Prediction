@@ -9,27 +9,77 @@ import plotly.express as px
 import plotly.graph_objects as go
 from pathlib import Path
 
-# --- Robust auto-create model on first run (works on Streamlit Cloud) ----------
+# ---------------------------------------------------------------------------
+# SELF-CONTAINED TRAINING (no external ml_model/train_model.py needed)
+# ---------------------------------------------------------------------------
+def _make_synthetic_dataset(n=2000, random_state=42):
+    rng = np.random.default_rng(random_state)
+    supplier_reliability = rng.uniform(0, 1, n)
+    demand_volatility    = rng.uniform(0, 1, n)
+    geopolitical_risk    = rng.uniform(0, 1, n)
+    economic_indicators  = rng.uniform(0, 1, n)
+    historical_delays    = rng.uniform(0, 1, n)
+
+    base = (
+        (1 - supplier_reliability) * 0.35
+        + demand_volatility * 0.20
+        + geopolitical_risk * 0.20
+        + (1 - economic_indicators) * 0.15
+        + historical_delays * 0.10
+    )
+    noise = rng.normal(0, 0.05, n)
+    risk_cont = np.clip(base + noise, 0, 1)
+
+    y = np.digitize(risk_cont, bins=[0.33, 0.66])  # 0,1,2 classes
+
+    df = pd.DataFrame({
+        "supplier_reliability": supplier_reliability,
+        "demand_volatility": demand_volatility,
+        "geopolitical_risk": geopolitical_risk,
+        "economic_indicators": economic_indicators,
+        "historical_delays": historical_delays,
+        "risk_level": y
+    })
+    return df
+
+def train_and_save_model():
+    from sklearn.ensemble import RandomForestClassifier
+    from sklearn.model_selection import train_test_split
+
+    st.write("🔧 First-time setup: training model…")
+    df = _make_synthetic_dataset()
+
+    X = df[["supplier_reliability","demand_volatility","geopolitical_risk",
+            "economic_indicators","historical_delays"]]
+    y = df["risk_level"]
+
+    X_train, X_test, y_train, y_test = train_test_split(
+        X, y, test_size=0.2, random_state=42, stratify=y
+    )
+
+    model = RandomForestClassifier(
+        n_estimators=200, max_depth=None, random_state=42, class_weight="balanced"
+    )
+    model.fit(X_train, y_train)
+
+    os.makedirs("ml_model", exist_ok=True)
+    joblib.dump(model, "ml_model/risk_prediction_model.pkl")
+
+    os.makedirs("data", exist_ok=True)
+    df.to_csv("data/sample_supply_chain_data.csv", index=False)
+
+# --- auto-create model on first run ---
 MODEL_PATH = Path("ml_model/risk_prediction_model.pkl")
 if not MODEL_PATH.exists():
     MODEL_PATH.parent.mkdir(parents=True, exist_ok=True)
     Path("data").mkdir(parents=True, exist_ok=True)
+    train_and_save_model()
+# --------------------------------------
 
-    # Try normal package import first
-    try:
-        import ml_model.train_model as trainer
-    except ModuleNotFoundError:
-        # Fallback: import by file path so it works even without __init__.py
-        import importlib.util
-        train_path = Path("ml_model") / "train_model.py"
-        spec = importlib.util.spec_from_file_location("trainer", train_path)
-        trainer = importlib.util.module_from_spec(spec)
-        assert spec and spec.loader, "Cannot load trainer spec"
-        spec.loader.exec_module(trainer)
 
-    trainer.train_model()  # must save to ml_model/risk_prediction_model.pkl
-# ------------------------------------------------------------------------------
-
+# ---------------------------------------------------------------------------
+# UI + APP LOGIC
+# ---------------------------------------------------------------------------
 st.set_page_config(
     page_title="Supply Chain Risk Prediction",
     page_icon="📊",
@@ -39,8 +89,7 @@ st.set_page_config(
 
 @st.cache_resource
 def load_model():
-    model_path = 'ml_model/risk_prediction_model.pkl'
-    return joblib.load(model_path)
+    return joblib.load("ml_model/risk_prediction_model.pkl")
 
 def init_db():
     conn = sqlite3.connect('supply_chain_risk.db')
@@ -104,6 +153,7 @@ def predict_risk(model, input_data):
 def main():
     st.title("📊 Supply Chain Risk Prediction Dashboard")
     st.markdown("Predict and monitor supply chain risks using machine learning")
+
     model = load_model()
 
     st.sidebar.header("Navigation")
@@ -118,8 +168,8 @@ def main():
 
 def show_prediction_page(model):
     st.header("🔮 Risk Prediction")
-    col1, col2 = st.columns([1, 1])
 
+    col1, col2 = st.columns([1, 1])
     with col1:
         st.subheader("Input Parameters")
         with st.form("prediction_form"):
@@ -142,7 +192,6 @@ def show_prediction_page(model):
             historical_delays    = st.slider("Historical Delays", 0.0, 1.0, 0.1, 0.01)
 
             submitted = st.form_submit_button("Predict Risk")
-
             if submitted:
                 input_data = {
                     'supplier_id': supplier_id,
@@ -156,7 +205,6 @@ def show_prediction_page(model):
                     'economic_indicators': economic_indicators,
                     'historical_delays': historical_delays
                 }
-
                 with st.spinner("Analyzing risk factors..."):
                     risk_level, risk_score = predict_risk(model, input_data)
 
@@ -232,7 +280,7 @@ def show_history_page():
         filtered_df = filtered_df[filtered_df['supplier_id'].str.contains(supplier_filter, case=False)]
     if date_filter:
         filtered_df['timestamp'] = pd.to_datetime(filtered_df['timestamp'])
-        filtered_df = filtered_df['timestamp'].dt.date >= date_filter
+        filtered_df = filtered_df[filtered_df['timestamp'].dt.date >= date_filter]
 
     col1, col2, col3, col4 = st.columns(4)
     with col1:
@@ -248,10 +296,9 @@ def show_history_page():
         st.metric("Latest Risk Score", f"{latest_score:.3f}")
 
     st.subheader("Prediction History")
-    display_df = df.copy()
+    display_df = filtered_df.copy()
     display_df['risk_level'] = display_df['risk_level'].map({0: "Low", 1: "Medium", 2: "High"})
     display_df['timestamp'] = pd.to_datetime(display_df['timestamp']).dt.strftime('%Y-%m-%d %H:%M:%S')
-
     st.dataframe(
         display_df[['timestamp', 'supplier_id', 'product_id', 'quantity',
                     'price', 'risk_level', 'risk_score']].head(50),
@@ -260,12 +307,8 @@ def show_history_page():
 
     if not filtered_df.empty:
         csv = filtered_df.to_csv(index=False)
-        st.download_button(
-            label="Download History as CSV",
-            data=csv,
-            file_name="risk_predictions.csv",
-            mime="text/csv"
-        )
+        st.download_button("Download History as CSV", data=csv,
+                           file_name="risk_predictions.csv", mime="text/csv")
 
 def show_analytics_page():
     st.header("📈 Risk Analytics")
